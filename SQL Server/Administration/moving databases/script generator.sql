@@ -1,14 +1,6 @@
 DECLARE @unc_backup_path AS varchar(max) = '\\newServer\backup_share\'
 	, @local_backup_path AS varchar(max) = 'E:\Backup\'
-	, @new_data_path as varchar(max) = 'D:\Data\'
-
-CREATE TABLE ##CommandList (
-	dbName sysname unique
-	, backup_command varchar(max)
-	, offline_command varchar(max)
-	, restore_command varchar(max)
-)
-
+	, @new_data_path as varchar(max) = 'D:\SQLServer\data\';
 
 SELECT name	
 	, 'BACKUP DATABASE [' + name + '] TO DISK = ''' + @unc_backup_path + name + '.bak'' WITH STATS = 5;' AS backup_command
@@ -21,9 +13,7 @@ SELECT name
 			FROM sys.master_files mf
 			WHERE mf.database_id = d.database_id
 			FOR XML PATH('')
-		) + 'REPLACE, RECOVERY, STATS = 5;' AS restore_command
+		) + 'INTI, REPLACE, RECOVERY, STATS = 5;' AS restore_command
 FROM sys.databases d
-WHERE database_id > 4
+WHERE database_id > 4 AND state_desc = N'ONLINE';
 
-
-DROP TABLE ##CommandList
