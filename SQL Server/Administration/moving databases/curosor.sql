@@ -1,24 +1,24 @@
-DECLARE @unc_backup_path AS varchar(max) = 'D:\SQLServer\backup\'--'\\newServer\backup_share\' --путь к шаре для бэкапа на новом сервере
-	, @local_backup_path AS varchar(max) = 'D:\SQLServer\backup\'	--локальный путь на новом сервере к папке с бэкапами
-	, @new_data_path as varchar(max) = 'D:\SQLServer\data\';		--локальный путь на новом сервере к папке, где должны оказаться данные
+п»їDECLARE @unc_backup_path AS varchar(max) = 'D:\SQLServer\backup\'--'\\newServer\backup_share\' --РїСѓС‚СЊ Рє С€Р°СЂРµ РґР»СЏ Р±СЌРєР°РїР° РЅР° РЅРѕРІРѕРј СЃРµСЂРІРµСЂРµ
+	, @local_backup_path AS varchar(max) = 'D:\SQLServer\backup\'	--Р»РѕРєР°Р»СЊРЅС‹Р№ РїСѓС‚СЊ РЅР° РЅРѕРІРѕРј СЃРµСЂРІРµСЂРµ Рє РїР°РїРєРµ СЃ Р±СЌРєР°РїР°РјРё
+	, @new_data_path as varchar(max) = 'D:\SQLServer\data\';		--Р»РѕРєР°Р»СЊРЅС‹Р№ РїСѓС‚СЊ РЅР° РЅРѕРІРѕРј СЃРµСЂРІРµСЂРµ Рє РїР°РїРєРµ, РіРґРµ РґРѕР»Р¶РЅС‹ РѕРєР°Р·Р°С‚СЊСЃСЏ РґР°РЅРЅС‹Рµ
 
 SET NOCOUNT ON;
 
 IF OBJECT_ID ('tempdb..##CommandList', 'U') IS NULL
 	CREATE TABLE ##CommandList (
-		dbName sysname unique			--имя БД
-		, backup_command varchar(max)	--сгенерированная команда для бэкапа
-		, offline_command varchar(max)	--сгенерированная команда для перевода БД в офлайн после бэкапа
-		, restore_command varchar(max)	--сгенерированная команда для восстановления БД на новом сервере
-		, processed bit					--признак обработки: NULL - не обработано, 0 - обработано успешно, 1 - ошибка
-		, start_dt datetime				--когда начали обработку
-		, finish_dt datetime			--когда закончили обработку
-		, error_msg varchar(max)		--сообщение об ошибке, при наличии
+		dbName sysname unique			--РёРјСЏ Р‘Р”
+		, backup_command varchar(max)	--СЃРіРµРЅРµСЂРёСЂРѕРІР°РЅРЅР°СЏ РєРѕРјР°РЅРґР° РґР»СЏ Р±СЌРєР°РїР°
+		, offline_command varchar(max)	--СЃРіРµРЅРµСЂРёСЂРѕРІР°РЅРЅР°СЏ РєРѕРјР°РЅРґР° РґР»СЏ РїРµСЂРµРІРѕРґР° Р‘Р” РІ РѕС„Р»Р°Р№РЅ РїРѕСЃР»Рµ Р±СЌРєР°РїР°
+		, restore_command varchar(max)	--СЃРіРµРЅРµСЂРёСЂРѕРІР°РЅРЅР°СЏ РєРѕРјР°РЅРґР° РґР»СЏ РІРѕСЃСЃС‚Р°РЅРѕРІР»РµРЅРёСЏ Р‘Р” РЅР° РЅРѕРІРѕРј СЃРµСЂРІРµСЂРµ
+		, processed bit					--РїСЂРёР·РЅР°Рє РѕР±СЂР°Р±РѕС‚РєРё: NULL - РЅРµ РѕР±СЂР°Р±РѕС‚Р°РЅРѕ, 0 - РѕР±СЂР°Р±РѕС‚Р°РЅРѕ СѓСЃРїРµС€РЅРѕ, 1 - РѕС€РёР±РєР°
+		, start_dt datetime				--РєРѕРіРґР° РЅР°С‡Р°Р»Рё РѕР±СЂР°Р±РѕС‚РєСѓ
+		, finish_dt datetime			--РєРѕРіРґР° Р·Р°РєРѕРЅС‡РёР»Рё РѕР±СЂР°Р±РѕС‚РєСѓ
+		, error_msg varchar(max)		--СЃРѕРѕР±С‰РµРЅРёРµ РѕР± РѕС€РёР±РєРµ, РїСЂРё РЅР°Р»РёС‡РёРё
 	);
 
 INSERT INTO ##CommandList (dbname, backup_command, offline_command, restore_command)
 SELECT name	
-	, 'BACKUP DATABASE [' + name + '] TO DISK = ''' + @unc_backup_path + name + '.bak'' WITH INIT, STATS = 5;' AS backup_command --включает INIT - бэкап в месте назначения будет перезаписываться
+	, 'BACKUP DATABASE [' + name + '] TO DISK = ''' + @unc_backup_path + name + '.bak'' WITH INIT, STATS = 5;' AS backup_command --РІРєР»СЋС‡Р°РµС‚ INIT - Р±СЌРєР°Рї РІ РјРµСЃС‚Рµ РЅР°Р·РЅР°С‡РµРЅРёСЏ Р±СѓРґРµС‚ РїРµСЂРµР·Р°РїРёСЃС‹РІР°С‚СЊСЃСЏ
 	, 'ALTER DATABASE [' + name + '] SET OFFLINE WITH ROLLBACK IMMEDIATE;' AS offline_command
 	, 'RESTORE DATABASE [' + name + '] FROM DISK = ''' + @local_backup_path + name + '.bak'' WITH ' 
 		+ (
@@ -33,7 +33,7 @@ FROM sys.databases d
 WHERE database_id > 4 
 	AND state_desc = N'ONLINE'
 	AND name NOT IN (SELECT dbname FROM ##CommandList)
-	AND name <> 'Maintenance';	--у меня linked server - это тот же экземпляр, поэтому исключаю БД, которая используется на "linked server"
+	AND name <> 'Maintenance';	--Сѓ РјРµРЅСЏ linked server - СЌС‚Рѕ С‚РѕС‚ Р¶Рµ СЌРєР·РµРјРїР»СЏСЂ, РїРѕСЌС‚РѕРјСѓ РёСЃРєР»СЋС‡Р°СЋ Р‘Р”, РєРѕС‚РѕСЂР°СЏ РёСЃРїРѕР»СЊР·СѓРµС‚СЃСЏ РЅР° "linked server"
 
 DECLARE @dbname AS sysname
 	, @backup_cmd AS varchar(max)
@@ -52,36 +52,36 @@ FETCH NEXT FROM BeginWork INTO @dbname, @backup_cmd, @offline_cmd, @restore_cmd;
 
 WHILE @@FETCH_STATUS = 0
 	BEGIN
-		--имя БД и команды получены, теперь нужно:
-		-- сделать бэкап
-		-- добавить в таблицу-приёмник на новом экземпляре команду для восстановления
-		-- перевести БД в офлайн, чтобы к ней не могли подключиться
-		-- получить следующую БД из списка
+		--РёРјСЏ Р‘Р” Рё РєРѕРјР°РЅРґС‹ РїРѕР»СѓС‡РµРЅС‹, С‚РµРїРµСЂСЊ РЅСѓР¶РЅРѕ:
+		-- СЃРґРµР»Р°С‚СЊ Р±СЌРєР°Рї
+		-- РґРѕР±Р°РІРёС‚СЊ РІ С‚Р°Р±Р»РёС†Сѓ-РїСЂРёС‘РјРЅРёРє РЅР° РЅРѕРІРѕРј СЌРєР·РµРјРїР»СЏСЂРµ РєРѕРјР°РЅРґСѓ РґР»СЏ РІРѕСЃСЃС‚Р°РЅРѕРІР»РµРЅРёСЏ
+		-- РїРµСЂРµРІРµСЃС‚Рё Р‘Р” РІ РѕС„Р»Р°Р№РЅ, С‡С‚РѕР±С‹ Рє РЅРµР№ РЅРµ РјРѕРіР»Рё РїРѕРґРєР»СЋС‡РёС‚СЊСЃСЏ
+		-- РїРѕР»СѓС‡РёС‚СЊ СЃР»РµРґСѓСЋС‰СѓСЋ Р‘Р” РёР· СЃРїРёСЃРєР°
 
-		--делаем отметку о начале работ
+		--РґРµР»Р°РµРј РѕС‚РјРµС‚РєСѓ Рѕ РЅР°С‡Р°Р»Рµ СЂР°Р±РѕС‚
 		UPDATE ##CommandList
 		SET start_dt = GETDATE()
 		WHERE dbName = @dbname;
 
 		BEGIN TRY
 			
-			RAISERROR ('Делаем бэкап %s', 0, 1, @dbname) WITH NOWAIT; --сообщения на вкладке messages будут появляться сразу
+			RAISERROR ('Р”РµР»Р°РµРј Р±СЌРєР°Рї %s', 0, 1, @dbname) WITH NOWAIT; --СЃРѕРѕР±С‰РµРЅРёСЏ РЅР° РІРєР»Р°РґРєРµ messages Р±СѓРґСѓС‚ РїРѕСЏРІР»СЏС‚СЊСЃСЏ СЃСЂР°Р·Сѓ
 			
-			-- делаем бэкап
+			-- РґРµР»Р°РµРј Р±СЌРєР°Рї
 			EXEC (@backup_cmd);
 
-			RAISERROR ('Добавляем команду на восстановления %s', 0, 1, @dbname) WITH NOWAIT;
+			RAISERROR ('Р”РѕР±Р°РІР»СЏРµРј РєРѕРјР°РЅРґСѓ РЅР° РІРѕСЃСЃС‚Р°РЅРѕРІР»РµРЅРёСЏ %s', 0, 1, @dbname) WITH NOWAIT;
 
-			-- добавляем запись в таблицу-приёмник на linked server
+			-- РґРѕР±Р°РІР»СЏРµРј Р·Р°РїРёСЃСЊ РІ С‚Р°Р±Р»РёС†Сѓ-РїСЂРёС‘РјРЅРёРє РЅР° linked server
 			INSERT INTO [(LOCAL)].[Maintenance].[dbo].[CommandList] (dbName, restore_command)
 			VALUES (@dbname, @restore_cmd);
 
-			RAISERROR ('Переводим %s в OFFLINE', 0, 1, @dbname) WITH NOWAIT;
+			RAISERROR ('РџРµСЂРµРІРѕРґРёРј %s РІ OFFLINE', 0, 1, @dbname) WITH NOWAIT;
 
-			-- переводим БД в офлайн
+			-- РїРµСЂРµРІРѕРґРёРј Р‘Р” РІ РѕС„Р»Р°Р№РЅ
 			EXEC (@offline_cmd);
 
-			--Ставим успешный статус, проставляем время окончания работы
+			--РЎС‚Р°РІРёРј СѓСЃРїРµС€РЅС‹Р№ СЃС‚Р°С‚СѓСЃ, РїСЂРѕСЃС‚Р°РІР»СЏРµРј РІСЂРµРјСЏ РѕРєРѕРЅС‡Р°РЅРёСЏ СЂР°Р±РѕС‚С‹
 			UPDATE ##CommandList
 			SET processed = 0
 				, finish_dt = GETDATE()
@@ -90,9 +90,9 @@ WHILE @@FETCH_STATUS = 0
 		END TRY
 		BEGIN CATCH
 			
-			RAISERROR ('ОШИБКА. Необходимо проверить error_msg в ##CommandList', 0, 1, @dbname) WITH NOWAIT;
+			RAISERROR ('РћРЁРР‘РљРђ. РќРµРѕР±С…РѕРґРёРјРѕ РїСЂРѕРІРµСЂРёС‚СЊ error_msg РІ ##CommandList', 0, 1, @dbname) WITH NOWAIT;
 
-			-- если что-то пошло не так, ставим ошибочный статус и описание ошибки
+			-- РµСЃР»Рё С‡С‚Рѕ-С‚Рѕ РїРѕС€Р»Рѕ РЅРµ С‚Р°Рє, СЃС‚Р°РІРёРј РѕС€РёР±РѕС‡РЅС‹Р№ СЃС‚Р°С‚СѓСЃ Рё РѕРїРёСЃР°РЅРёРµ РѕС€РёР±РєРё
 			UPDATE ##CommandList
 			SET processed = 1
 				, finish_dt = GETDATE()
@@ -107,9 +107,9 @@ CLOSE BeginWork;
 
 DEALLOCATE BeginWork;
 
---выводим результат
+--РІС‹РІРѕРґРёРј СЂРµР·СѓР»СЊС‚Р°С‚
 SELECT dbName
-	, CASE processed WHEN 1 THEN 'Ошибка' WHEN 0 THEN 'Успешно' ELSE 'Не обработано' END as Status 
+	, CASE processed WHEN 1 THEN 'РћС€РёР±РєР°' WHEN 0 THEN 'РЈСЃРїРµС€РЅРѕ' ELSE 'РќРµ РѕР±СЂР°Р±РѕС‚Р°РЅРѕ' END as Status 
 	, start_dt
 	, finish_dt
 	, error_msg

@@ -1,12 +1,12 @@
-USE [Maintenance]
+п»їUSE [Maintenance]
 GO
 
 CREATE TABLE CommandList (
-	dbName sysname unique						--имя БД
-	, restore_command varchar(max)				--команда для восстановления
-	, processed bit								--статус выполнения
-	, creation_dt datetime DEFAULT GETDATE()	--время добавления записи
-	, start_dt datetime							--время начала обработки
-	, finish_dt datetime						--время окончания обработки
-	, error_msg varchar(max)					--текст ошибки, при наличии
+	dbName sysname unique						--РёРјСЏ Р‘Р”
+	, restore_command varchar(max)				--РєРѕРјР°РЅРґР° РґР»СЏ РІРѕСЃСЃС‚Р°РЅРѕРІР»РµРЅРёСЏ
+	, processed bit								--СЃС‚Р°С‚СѓСЃ РІС‹РїРѕР»РЅРµРЅРёСЏ
+	, creation_dt datetime DEFAULT GETDATE()	--РІСЂРµРјСЏ РґРѕР±Р°РІР»РµРЅРёСЏ Р·Р°РїРёСЃРё
+	, start_dt datetime							--РІСЂРµРјСЏ РЅР°С‡Р°Р»Р° РѕР±СЂР°Р±РѕС‚РєРё
+	, finish_dt datetime						--РІСЂРµРјСЏ РѕРєРѕРЅС‡Р°РЅРёСЏ РѕР±СЂР°Р±РѕС‚РєРё
+	, error_msg varchar(max)					--С‚РµРєСЃС‚ РѕС€РёР±РєРё, РїСЂРё РЅР°Р»РёС‡РёРё
 );

@@ -1,4 +1,4 @@
---SELECT *
+п»ї--SELECT *
 --FROM CommandList;
 
 SET NOCOUNT ON;
@@ -6,38 +6,38 @@ SET NOCOUNT ON;
 DECLARE @dbname AS sysname
 	, @restore_cmd AS varchar(max);
 
-WHILE 1 = 1	--можно придумать условие остановки, но мне было лень
+WHILE 1 = 1	--РјРѕР¶РЅРѕ РїСЂРёРґСѓРјР°С‚СЊ СѓСЃР»РѕРІРёРµ РѕСЃС‚Р°РЅРѕРІРєРё, РЅРѕ РјРЅРµ Р±С‹Р»Рѕ Р»РµРЅСЊ
 BEGIN
 	SELECT TOP 1 @dbname = dbName, @restore_cmd = restore_command 
 	FROM CommandList
-	WHERE processed IS NULL; --берём случайную БД из таблицы, среди необработанных
+	WHERE processed IS NULL; --Р±РµСЂС‘Рј СЃР»СѓС‡Р°Р№РЅСѓСЋ Р‘Р” РёР· С‚Р°Р±Р»РёС†С‹, СЃСЂРµРґРё РЅРµРѕР±СЂР°Р±РѕС‚Р°РЅРЅС‹С…
 
 	IF @dbname IS NOT NULL 
 	BEGIN
-		--добавляем сообщение о начале обработки
+		--РґРѕР±Р°РІР»СЏРµРј СЃРѕРѕР±С‰РµРЅРёРµ Рѕ РЅР°С‡Р°Р»Рµ РѕР±СЂР°Р±РѕС‚РєРё
 		UPDATE CommandList
 		SET start_dt = GETDATE()
 		WHERE dbName = @dbname;
 
-		RAISERROR('Начали восстановление %s', 0, 1, @dbname) WITH NOWAIT;
+		RAISERROR('РќР°С‡Р°Р»Рё РІРѕСЃСЃС‚Р°РЅРѕРІР»РµРЅРёРµ %s', 0, 1, @dbname) WITH NOWAIT;
 		
 		BEGIN TRY
 
-			--пробуем восстановить БД, если что-то не так, в CATCH запишем что не так
+			--РїСЂРѕР±СѓРµРј РІРѕСЃСЃС‚Р°РЅРѕРІРёС‚СЊ Р‘Р”, РµСЃР»Рё С‡С‚Рѕ-С‚Рѕ РЅРµ С‚Р°Рє, РІ CATCH Р·Р°РїРёС€РµРј С‡С‚Рѕ РЅРµ С‚Р°Рє
 			EXEC (@restore_cmd);
 
-			--добавляем информацию в журнал
+			--РґРѕР±Р°РІР»СЏРµРј РёРЅС„РѕСЂРјР°С†РёСЋ РІ Р¶СѓСЂРЅР°Р»
 			UPDATE CommandList
 			SET processed = 0
 				, finish_dt = GETDATE()
 			WHERE dbName = @dbname;
 
-			RAISERROR('База %s восстановлена успешно', 0, 1, @dbname) WITH NOWAIT;
+			RAISERROR('Р‘Р°Р·Р° %s РІРѕСЃСЃС‚Р°РЅРѕРІР»РµРЅР° СѓСЃРїРµС€РЅРѕ', 0, 1, @dbname) WITH NOWAIT;
 
 		END TRY
 		BEGIN CATCH
 
-			RAISERROR('Возникла проблема с восстановлением %s', 0, 1, @dbname) WITH NOWAIT;
+			RAISERROR('Р’РѕР·РЅРёРєР»Р° РїСЂРѕР±Р»РµРјР° СЃ РІРѕСЃСЃС‚Р°РЅРѕРІР»РµРЅРёРµРј %s', 0, 1, @dbname) WITH NOWAIT;
 
 			UPDATE CommandList 
 			SET processed = 1
@@ -47,7 +47,7 @@ BEGIN
 		END CATCH
 
 	END
-	ELSE	--если ничего не выбрали, то просто ждём 
+	ELSE	--РµСЃР»Рё РЅРёС‡РµРіРѕ РЅРµ РІС‹Р±СЂР°Р»Рё, С‚Рѕ РїСЂРѕСЃС‚Рѕ Р¶РґС‘Рј 
 		BEGIN
 
 			RAISERROR('waiting', 0, 1) WITH NOWAIT;

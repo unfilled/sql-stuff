@@ -1,4 +1,4 @@
-DECLARE @unc_backup_path AS varchar(max) = '\\newServer\backup_share\'
+﻿DECLARE @unc_backup_path AS varchar(max) = '\\newServer\backup_share\'
 	, @local_backup_path AS varchar(max) = 'E:\Backup\'
 	, @new_data_path as varchar(max) = 'D:\SQLServer\data\';
 
