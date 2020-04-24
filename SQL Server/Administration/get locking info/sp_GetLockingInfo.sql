@@ -2,7 +2,7 @@
     DROP PROC sp_GetLockingInfo;
 GO
 
---TODO: добавить везде MAXDOP 1
+--TODO: добавить везде MAXDOP 1 V
 --TODO: сделать возможным запуск процедуры из нескольких сессий? Либо переход на локальные вр. таблицы, либо добавить executor_spid в snapshot
 --TODO: Добавить sys.dm_os_waiting_tasks
 --TODO: Добавить информацию о потреблённых ресурсах и ожиданиях в детальном отчёте
@@ -17,7 +17,7 @@ CREATE PROCEDURE sp_GetLockingInfo (            --Если параметр NULL
     , @login nvarchar(200)      = NULL          --ИЛИ логин
     , @clear_data bit           = 1             --Если 1, перед окончанием выполнения, временные таблиц будут удалены, если 0 - останутся
     , @refill_data bit          = 1             --Если 0, при наличии данных во временных таблицах, они не будут перезаполняться, если 1 - в любом случае будут
-    , @view nvarchar(200)       = N'OVERVIEW'   --'DETAILED' - вывод всех резалтсетов, 'OVERVIEW' - Только "суммарных" по БД и сессиям
+    , @mode nvarchar(200)       = N'OVERVIEW'   --'DETAILED' - вывод всех резалтсетов, 'OVERVIEW' - Только "суммарных" по БД и сессиям
     , @system_dbs_info bit      = 0             --Включать в snapshot блокировки в системных БД? 1 - да, 0 - нет
     , @system_spids_info bit    = 0             --Включать в snapshot блокировки системных процессов? 1 - да, 0 - нет
     , @check_my_locks bit       = 0             --учитывать блокировки, наложенные сессией, запускающей процедуру
@@ -27,7 +27,10 @@ AS
     SET XACT_ABORT ON;
 
     SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;    
-
+    
+    DECLARE @dbg_info AS nvarchar(255) = N'Started at: ' + CONVERT(nvarchar(50), CURRENT_TIMESTAMP, 120);
+    RAISERROR (@dbg_info, 1, 1) WITH NOWAIT;
+    
     --Проверка параметров
     -------------------------------------------------------------------------------------------------------------------
     
@@ -47,10 +50,10 @@ AS
         SET @db_name = (SELECT TOP 1 name FROM sys.databases WHERE database_id = @db_id)
     
     --режим просмотра
-    IF @view NOT IN (N'DETAILED', N'OVERVIEW')
+    IF @mode NOT IN (N'DETAILED', N'OVERVIEW')
         BEGIN
-            RAISERROR ('Некорректно заполнен параметр @view, будет использовано значение OVERVIEW', 16, 1) WITH NOWAIT;
-            SET @view = N'OVERVIEW';
+            RAISERROR ('Некорректно заполнен параметр @mode, будет использовано значение OVERVIEW', 16, 1) WITH NOWAIT;
+            SET @mode = N'OVERVIEW';
         END
 
     --требуется очистка "snapshot" блокировок?
@@ -63,7 +66,7 @@ AS
         
         END
 
-    PRINT @view;
+    PRINT @mode;
 
     -------------------------------------------------------------------------------------------------------------------
 
@@ -439,7 +442,7 @@ AS
 
     --TODO: учитывать @db_name, @login_name, @session_id - либо выводить информацию только по ним, либо выделять в списке
 
-    IF @view = N'DETAILED'
+    IF @mode = N'DETAILED'
     BEGIN
 
         --Список блокировок, сессий, входящих в "цепочки блокировок". Сюда попадают только сессии, которые создают ожидания
@@ -448,12 +451,15 @@ AS
         --если второй резалтсет пустой - значит все сессии кого-то блокируют
 
         --TODO: разделить первый резалтсет на два. В первом только те, кто блокирует, но сами не заблокированы;
-        -- во втором - те, которые кого-то блокируют, но, при этом сами заблокированы сессиями из первого резалтсета
+        --во втором - те, которые кого-то блокируют, но, при этом сами заблокированы сессиями из первого резалтсета
 
-        SELECT ls.db_name
-            , ls.resource_type
-            , ls.resource_description
-            , ls.hobt_id
+        --информация о сессиях, которые блокируют других, но сами не заблокированы ни кем
+        SELECT 
+            ls.session_id
+            , ls.login_name
+            , ls.host_name
+            , ls.status            
+            , ls.db_name
             , CASE 
                 WHEN lo.locked_object_name = ls.object_name 
                     AND lo.resource_type = ls.resource_type 
@@ -461,23 +467,64 @@ AS
                 THEN N'___' + ls.object_name + N'___' 
                 ELSE ls.object_name
             END AS object_name    --если это тот ресурс, которого кто-то ждёт, имя выделяется нижними подчёркиваниями
+            , ls.resource_type
+            , ls.resource_description
+            , ls.hobt_id
             , ls.request_type
-            , CASE 
-                WHEN ls.request_status = N'GRANT' THEN ls.request_status
-                ELSE N'___' + ls.request_status + N'___' 
-            END AS request_status    --если блокирующая сессия сама кого-то ждёт, статус выделяется нижними подчёркиваниями
+            , request_status    
             , ls.request_mode
-            , ls.session_id
-            , ls.login_name
-            , ls.host_name
-            , ls.status
             , ls.open_transaction_count
             , ls.text
         FROM ##locks_snapshot ls
         INNER JOIN 
             (    
                 SELECT DISTINCT granted_SPID, locked_object_name, resource_type, [resource]
-                FROM ##locked_objects
+                FROM ##locked_objects ilo
+                WHERE NOT EXISTS (                              --получаем только тех, кто блокирует других, но сам не заблокирован
+                    SELECT 1/0 FROM ##locked_objects ilo2 WHERE ilo2.waiting_SPID = ilo.granted_SPID
+                )
+            ) lo ON ls.session_id = lo.granted_SPID
+        ORDER BY ls.session_id, ls.db_name, ls.object_name
+            , CASE 
+                WHEN ls.resource_type = N'OBJECT' THEN 1 
+                WHEN ls.resource_type = N'EXTENT' THEN 2
+                WHEN ls.resource_type = N'PAGE' THEN 3
+                ELSE 4 END
+        OPTION (MAXDOP 1);
+
+        --информация о сессиях, которые блокируют других, при этом сами кем-то заблокированы
+        SELECT 
+            ls.session_id
+            , ls.login_name
+            , ls.host_name
+            , ls.status
+            , ls.db_name
+            , CASE 
+                WHEN lo.locked_object_name = ls.object_name 
+                    AND lo.resource_type = ls.resource_type 
+                    AND lo.[resource] = ls.resource_description 
+                THEN N'___' + ls.object_name + N'___' 
+                ELSE ls.object_name
+            END AS object_name    --если это тот ресурс, которого кто-то ждёт, имя выделяется нижними подчёркиваниями
+            , ls.resource_type
+            , ls.resource_description
+            , ls.hobt_id
+            , ls.request_type
+            , CASE 
+                WHEN ls.request_status = N'GRANT' THEN ls.request_status
+                ELSE N'___' + ls.request_status + N'___' 
+            END AS request_status    --если блокирующая сессия сама кого-то ждёт, статус выделяется нижними подчёркиваниями
+            , ls.request_mode
+            , ls.open_transaction_count
+            , ls.text
+        FROM ##locks_snapshot ls
+        INNER JOIN 
+            (    
+                SELECT DISTINCT granted_SPID, locked_object_name, resource_type, [resource]
+                FROM ##locked_objects ilo
+                WHERE EXISTS (      --получаем только тех, кто блокирует других, но сам заблокирован
+                    SELECT 1/0 FROM ##locked_objects ilo2 WHERE ilo2.waiting_SPID = ilo.granted_SPID
+                )
             ) lo ON ls.session_id = lo.granted_SPID
         ORDER BY ls.session_id, ls.db_name, ls.object_name
             , CASE 
@@ -488,11 +535,15 @@ AS
         OPTION (MAXDOP 1);
 
 
-        --ждуны
-        SELECT ls.db_name
-            , ls.resource_type
-            , ls.resource_description
-            , ls.hobt_id
+
+
+        --информация о сессиях, которые заблокированы, но сами никого не блокируют
+        SELECT
+            ls.session_id
+            , ls.login_name
+            , ls.host_name
+            , ls.status
+            , ls.db_name
             , CASE 
                 WHEN lo.locked_object_name = ls.object_name 
                     AND lo.resource_type = ls.resource_type 
@@ -500,13 +551,15 @@ AS
                 THEN N'___' + ls.object_name + N'___' 
                 ELSE ls.object_name
             END AS object_name    --если это тот ресурс, которого ждёт сессия, имя выделяется нижними подчёркиваниями
+            , ls.resource_type
+            , ls.resource_description
+            , ls.hobt_id
             , ls.request_type
-            , ls.request_status
+            , CASE 
+                WHEN ls.request_status = N'GRANT' THEN ls.request_status
+                ELSE N'___' + ls.request_status + N'___' 
+            END AS request_status    --статус ожидания на ресурсе выделяется нижними подчёркиваниями
             , ls.request_mode
-            , ls.session_id
-            , ls.login_name
-            , ls.host_name
-            , ls.status
             , ls.open_transaction_count
             , ls.text
         FROM ##locks_snapshot ls
@@ -544,8 +597,9 @@ AS
         DROP TABLE ##locked_objects;
 
     --------------------------------------------------------------------------------------------------------------------------------
-
-    PRINT 'Here we are';
+    SET @dbg_info = N'Finished at: ' + CONVERT(nvarchar(50), CURRENT_TIMESTAMP, 120);
+    RAISERROR (@dbg_info, 1, 1) WITH NOWAIT;
+    --PRINT 'Here we are';
 GO
 
 SET STATISTICS TIME, IO ON;
@@ -553,7 +607,7 @@ SET STATISTICS TIME, IO ON;
 --EXEC sp_GetLockingInfo 
 --                        @clear_data = 0
 --                        , @refill_data = 0
---                        , @view = N'OVERVIEW';
+--                        , @mode = N'OVERVIEW';
 --                        --, @SPID = 61
 --                        --, @db_name = N'StackOverflow2010'
 --                        --, @db_id = 5;
@@ -561,7 +615,7 @@ SET STATISTICS TIME, IO ON;
 EXEC sp_GetLockingInfo 
                         @clear_data = 0
                         , @refill_data = 1
-                        , @view = N'DETAILED';
+                        , @mode = N'DETAILED';
 SET STATISTICS TIME, IO OFF;
 
 
