@@ -7,6 +7,11 @@ GO
 --TODO: Добавить sys.dm_os_waiting_tasks
 --TODO: Добавить информацию о потреблённых ресурсах и ожиданиях в детальном отчёте
 
+--TODO: blocking_chains + новый параметр
+--TODO: по blocking_session_id можно построить, кроме цепочки блокировок, очередь, чтобы сразу видеть кто в каком порядке будет выполняться
+--возможно - этоо не имеет смысла, другие сессии, стоящие в очереди позже, могут иметь блокировки, которые потребуются тем. кто в очереди раньше
+--такая штука имеет смысл в разрезе объекта, да и то не факт
+
 
 
 --TODO: в параметры стоит добавить имя объекта?
@@ -91,6 +96,7 @@ AS
                 , [host_name]               nvarchar(128)
                 , [status]                  nvarchar(30)
                 , open_transaction_count    int
+                , blocking_session_id       smallint
                 , [text]                    nvarchar(MAX)
             );
 
@@ -106,7 +112,7 @@ AS
         
     CREATE TABLE ##orphaned_objects (
          db_name        sysname
-         , hobt_id        bigint
+         , hobt_id      bigint
          , is_object    bit
     );
 
@@ -158,7 +164,8 @@ AS
                     , login_name                
                     , [host_name]                
                     , [status]                    
-                    , open_transaction_count    
+                    , open_transaction_count
+                    , blocking_session_id
                     , [text]                    
         )
         SELECT 
@@ -190,12 +197,15 @@ AS
             , s.host_name
             , s.status
             , s.open_transaction_count
+            , r.blocking_session_id
             , est.text
         FROM sys.dm_tran_locks dtl
         LEFT JOIN sys.dm_exec_sessions s 
             ON dtl.request_session_id = s.session_id
         LEFT JOIN sys.dm_exec_connections c
             ON s.session_id = c.session_id
+        LEFT JOIN sys.dm_exec_requests r
+            ON s.session_id = r.session_id
         OUTER APPLY sys.dm_exec_sql_text (c.most_recent_sql_handle) est
         WHERE dtl.resource_type <> N'DATABASE'
             AND dtl.resource_database_id > CASE WHEN @system_dbs_info = 1 THEN 0 ELSE 4    END  --только пользовательские БД? задаётся параметром
@@ -368,6 +378,7 @@ AS
         , waiting_locks
         , objects_with_granted_locks
         , objects_with_waiting_locks
+        , nonintent_objects_granted_locks
         , CASE WHEN EXISTS (SELECT 1/0 FROM ##locked_objects lo where lo.granted_SPID = t.session_id) THEN 'V' ELSE '' END AS head_blocker_mark
     FROM
     (
@@ -390,6 +401,11 @@ AS
                                     THEN ls.object_name 
                                     ELSE NULL 
                                 END) AS objects_with_waiting_locks
+            , COUNT(DISTINCT CASE 
+                                WHEN ls.request_status = N'GRANT' AND ls.request_mode NOT LIKE N'I%' AND ls.resource_type = N'OBJECT'
+                                    THEN ls.object_name 
+                                    ELSE NULL 
+                                END) AS nonintent_objects_granted_locks
         FROM ##locks_snapshot ls
         WHERE
             (db_name = @db_name OR @db_name IS NULL) AND
@@ -419,6 +435,8 @@ AS
         , COUNT(DISTINCT CASE WHEN request_status = N'GRANT' THEN session_id ELSE NULL END) AS sessions_with_granted_locks
         , COUNT(DISTINCT CASE WHEN request_status <> N'GRANT' THEN session_id ELSE NULL END) AS waiting_sessions
         , COUNT(CASE WHEN request_status <> N'GRANT' THEN 1 ELSE NULL END) AS waiting_locks
+        , COUNT(CASE WHEN resource_type = N'OBJECT' AND request_mode NOT LIKE N'I%' AND request_status = N'GRANT' THEN 1 ELSE NULL END) AS object_nonintent_locks_granted
+        , COUNT(CASE WHEN resource_type = N'OBJECT' AND request_status <> N'GRANT' THEN 1 ELSE NULL END) AS object_locks_waiting
         , COUNT(CASE WHEN resource_type IN (N'KEY', N'RID') AND request_status = N'GRANT' THEN 1 ELSE NULL END) AS key_locks_granted
         , COUNT(CASE WHEN resource_type IN (N'KEY', N'RID') AND request_status <> N'GRANT' THEN 1 ELSE NULL END) AS key_locks_waiting
         , COUNT(CASE WHEN resource_type = N'PAGE' AND request_status = N'GRANT' THEN 1 ELSE NULL END) AS page_locks_granted
@@ -517,6 +535,7 @@ AS
             , ls.request_mode
             , ls.open_transaction_count
             , ls.text
+            , ls.blocking_session_id
         FROM ##locks_snapshot ls
         INNER JOIN 
             (    
@@ -562,6 +581,7 @@ AS
             , ls.request_mode
             , ls.open_transaction_count
             , ls.text
+            , ls.blocking_session_id
         FROM ##locks_snapshot ls
         INNER JOIN 
             (    
