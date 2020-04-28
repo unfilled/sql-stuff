@@ -26,6 +26,7 @@ CREATE PROCEDURE sp_GetLockingInfo (            --Если параметр NULL
     , @system_dbs_info bit      = 0             --Включать в snapshot блокировки в системных БД? 1 - да, 0 - нет
     , @system_spids_info bit    = 0             --Включать в snapshot блокировки системных процессов? 1 - да, 0 - нет
     , @check_my_locks bit       = 0             --учитывать блокировки, наложенные сессией, запускающей процедуру
+    , @blocking_chains bit      = 0             --показывать цепочки блокировок (может выполняться медленно) 
 )
 AS    
     SET NOCOUNT ON;
@@ -97,6 +98,7 @@ AS
                 , [status]                  nvarchar(30)
                 , open_transaction_count    int
                 , blocking_session_id       smallint
+                , transaction_il            smallint
                 , [text]                    nvarchar(MAX)
             );
 
@@ -137,9 +139,21 @@ AS
         , waiting_SPID              smallint
         , waiting_login             nvarchar(128)
         , waiting_host              nvarchar(128)
+        , waiter_blocking_session   smallint
         , waiting_query             nvarchar(max)
         , waiter_tran_cnt           int
     );
+
+    --таблица для поиска цепочек блокировок
+
+    IF OBJECT_ID('tempdb..##chains', 'U') IS NOT NULL 
+        DROP TABLE ##chains;
+    
+    IF @blocking_chains = 1
+        CREATE TABLE ##chains (
+            session_id              smallint, 
+            blocking_session_id     smallint,
+        );
 
     -------------------------------------------------------------------------------------------------------------------
     --если snapshot Блокировок пуст, он будет заполнен вне зависимости от значения @refill_data
@@ -166,6 +180,7 @@ AS
                     , [status]                    
                     , open_transaction_count
                     , blocking_session_id
+                    , transaction_il
                     , [text]                    
         )
         SELECT 
@@ -198,6 +213,7 @@ AS
             , s.status
             , s.open_transaction_count
             , r.blocking_session_id
+            , COALESCE(r.transaction_isolation_level, s.transaction_isolation_level)    --если нет возможности получить из реквеста, взять из сессии
             , est.text
         FROM sys.dm_tran_locks dtl
         LEFT JOIN sys.dm_exec_sessions s 
@@ -305,7 +321,8 @@ AS
             , waiting_lock_mode            
             , waiting_SPID                
             , waiting_login                
-            , waiting_host                
+            , waiting_host
+            , waiter_blocking_session
             , waiting_query                
             , waiter_tran_cnt            
         )
@@ -324,6 +341,7 @@ AS
         , waiter.session_id AS waiting_SPID
         , waiter.login_name as waiting_login
         , waiter.host_name AS waiting_host
+        , waiter.blocking_session_id
         , waiter.text AS waiting_query
         , waiter.open_transaction_count AS waiter_tran_cnt
     FROM ##locks_snapshot grantee
@@ -372,6 +390,20 @@ AS
         , host_name
         , CASE WHEN granted_locks > 0 AND status = N'SLEEPING' THEN UPPER(status) ELSE status END AS status
         , open_transaction_count
+        , CASE 
+            WHEN transaction_il = 0 THEN 'Unspecified'
+            WHEN transaction_il = 1 THEN 'Read Uncommitted'
+            WHEN transaction_il = 2 
+                AND EXISTS (SELECT 1/0 FROM sys.dm_tran_active_snapshot_database_transactions asdt WHERE asdt.session_id = t.session_id) 
+                THEN 'Read Committed Snapshot'
+            WHEN transaction_il = 2 
+                AND NOT EXISTS (SELECT 1/0 FROM sys.dm_tran_active_snapshot_database_transactions asdt WHERE asdt.session_id = t.session_id) 
+                THEN 'Read Committed Snapshot'
+            WHEN transaction_il = 3 THEN 'Repeatable Read'
+            WHEN transaction_il = 4 THEN 'Serializable'
+            WHEN transaction_il = 5 THEN 'Snapshot'
+            ELSE 'UNKNOWN'
+        END AS isolation_level
         , text
         , locks_in_dbs
         , granted_locks
@@ -379,7 +411,7 @@ AS
         , objects_with_granted_locks
         , objects_with_waiting_locks
         , nonintent_objects_granted_locks
-        , CASE WHEN EXISTS (SELECT 1/0 FROM ##locked_objects lo where lo.granted_SPID = t.session_id) THEN 'V' ELSE '' END AS head_blocker_mark
+        , CASE WHEN EXISTS (SELECT 1/0 FROM ##locked_objects lo where lo.granted_SPID = t.session_id) THEN 'V' ELSE '' END AS blocker_mark
     FROM
     (
         SELECT ls.session_id
@@ -387,6 +419,8 @@ AS
             , ls.host_name
             , ls.status
             , ls.open_transaction_count
+            , ls.blocking_session_id
+            , ls.transaction_il
             , ls.text    
             , COUNT(DISTINCT db_name) AS locks_in_dbs
             , SUM(CASE WHEN ls.request_status = N'GRANT' THEN 1 ELSE 0 END) AS granted_locks
@@ -413,15 +447,21 @@ AS
             (login_name = @login OR @login IS NULL) 
         GROUP BY 
             ls.session_id
-            , login_name
-            , host_name
+            , ls.login_name
+            , ls.host_name
             , ls.status
+            , ls.blocking_session_id
+            , ls.transaction_il
             , ls.text
             , ls.open_transaction_count
     )t
     ORDER BY 
-        head_blocker_mark DESC      --сначала те сессии, которые блокируют кого-то (head of chain)
-        , waiting_locks DESC        --потом те сессии, которые ждут больше 
+        blocker_mark DESC           --сначала те сессии, которые блокируют кого-то
+        , CASE 
+            WHEN EXISTS (SELECT 1/0 FROM ##locked_objects lo where lo.granted_SPID = t.session_id)
+                THEN 9999 
+            ELSE waiting_locks 
+        END DESC                    --если сессия кого-то блокирует, то вверху списка будут те, которые сами не заблокированы 
         , granted_locks DESC        --потом те, у которых больше всего блокировок наложено
         , session_id ASC            --и потом уже по spid'ам по возрастанию
     OPTION (MAXDOP 1);
@@ -601,6 +641,55 @@ AS
 
     --------------------------------------------------------------------------------------------------------------------------------
 
+    --построение цепочки блокировок
+    --------------------------------------------------------------------------------------------------------------------------------
+    IF @blocking_chains = 1
+    BEGIN
+        
+        INSERT INTO ##chains (session_id, blocking_session_id)
+        SELECT session_id, blocking_session_id
+        FROM ##locks_snapshot
+        GROUP BY session_id, blocking_session_id;
+
+        WITH chains_rec AS (
+            SELECT 
+                c.session_id, 
+                --c.blocking_session_id AS b_s_id,
+                c_prev.blocking_session_id AS prev_b_s_id,
+                CAST (CASE 
+                    WHEN c_prev.blocking_session_id IS NULL THEN ''
+                    ELSE CAST (c_prev.blocking_session_id AS varchar(100)) + ' -> ' 
+                END + CAST(c.blocking_session_id AS varchar(100)) AS varchar(100)) AS chain,
+                1 AS lvl
+            FROM ##chains c
+            JOIN ##chains c_prev ON c.blocking_session_id = c_prev.session_id 
+
+            UNION ALL
+
+            SELECT 
+                rec.session_id,
+                c.blocking_session_id,
+                CAST (rec.chain + 
+                CASE 
+                    WHEN c.blocking_session_id IS NULL THEN ''
+                    ELSE ' -> ' + CAST (c.blocking_session_id AS varchar(100)) 
+                END AS varchar(100)),
+                rec.lvl + 1   --следующий уровень в иерархии
+            FROM chains_rec rec
+            JOIN ##chains c ON rec.prev_b_s_id = c.session_id 
+
+        )
+        SELECT session_id, chain + ' -> ' + CAST(session_id AS varchar(10)) AS blocking_chain
+        FROM (
+            SELECT session_id, chain, ROW_NUMBER() OVER(PARTITION BY session_id ORDER BY lvl) AS rn
+            FROM chains_rec
+        )t 
+        WHERE rn = 1
+        ORDER BY chain, session_id
+        OPTION (MAXDOP 1);
+    END;
+
+    --------------------------------------------------------------------------------------------------------------------------------
 
 
     --очистка
@@ -616,6 +705,8 @@ AS
     IF OBJECT_ID('tempdb..##locked_objects', 'U') IS NOT NULL
         DROP TABLE ##locked_objects;
 
+    IF OBJECT_ID('tempdb..##chains', 'U') IS NOT NULL 
+        DROP TABLE ##chains;
     --------------------------------------------------------------------------------------------------------------------------------
     SET @dbg_info = N'Finished at: ' + CONVERT(nvarchar(50), CURRENT_TIMESTAMP, 120);
     RAISERROR (@dbg_info, 1, 1) WITH NOWAIT;
@@ -635,7 +726,8 @@ SET STATISTICS TIME, IO ON;
 EXEC sp_GetLockingInfo 
                         @clear_data = 0
                         , @refill_data = 1
-                        , @mode = N'DETAILED';
+                        , @mode = N'DETAILED'
+                        , @blocking_chains = 1;
 SET STATISTICS TIME, IO OFF;
 
 
