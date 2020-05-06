@@ -7,10 +7,12 @@ GO
 --TODO: Добавить sys.dm_os_waiting_tasks
 --TODO: Добавить информацию о потреблённых ресурсах и ожиданиях в детальном отчёте
 
---TODO: blocking_chains + новый параметр
+--TODO: blocking_chains + новый параметр V
 --TODO: по blocking_session_id можно построить, кроме цепочки блокировок, очередь, чтобы сразу видеть кто в каком порядке будет выполняться
 --возможно - этоо не имеет смысла, другие сессии, стоящие в очереди позже, могут иметь блокировки, которые потребуются тем. кто в очереди раньше
---такая штука имеет смысл в разрезе объекта, да и то не факт
+--такая штука имеет смысл в разрезе объекта, да и то не факт ---
+
+--TODO: добавить информацию о схеме, которой принадлежит объект
 
 
 
@@ -26,6 +28,7 @@ CREATE PROCEDURE sp_GetLockingInfo (            --Если параметр NULL
     , @system_dbs_info bit      = 0             --Включать в snapshot блокировки в системных БД? 1 - да, 0 - нет
     , @system_spids_info bit    = 0             --Включать в snapshot блокировки системных процессов? 1 - да, 0 - нет
     , @check_my_locks bit       = 0             --учитывать блокировки, наложенные сессией, запускающей процедуру
+    , @use_blocking_SPID bit    = 1             --1 - при выводе 1-го резалтсета, учитывается blocking_session_id; 0 - учитывается только заблокированный ресурс (в качестве блокирующих показываются все сессии с granted блокировкой на нужном ресурсе)
     , @blocking_chains bit      = 0             --показывать цепочки блокировок (может выполняться медленно) 
 )
 AS    
@@ -36,6 +39,8 @@ AS
     
     DECLARE @dbg_info AS nvarchar(255) = N'Started at: ' + CONVERT(nvarchar(50), CURRENT_TIMESTAMP, 120);
     RAISERROR (@dbg_info, 1, 1) WITH NOWAIT;
+
+    DECLARE @sql AS nvarchar(max);      --переменная для dynamic sql
     
     --Проверка параметров
     -------------------------------------------------------------------------------------------------------------------
@@ -129,6 +134,7 @@ AS
         , locked_object_name        nvarchar(128)
         , [resource]                nvarchar(60)
         , lock_mode                 nvarchar(60)
+        , lock_status               nvarchar(60)
         , granted_SPID              smallint
         , [login]                   nvarchar(128)
         , [host]                    nvarchar(128)
@@ -184,7 +190,7 @@ AS
                     , [text]                    
         )
         SELECT 
-            DB_NAME (dtl.resource_database_id) AS [db_name]
+            ISNULL(DB_NAME(dtl.resource_database_id), N'NULL') AS [db_name]
             , dtl.resource_type
             , dtl.resource_description
             , dtl.resource_associated_entity_id AS hobt_id
@@ -224,7 +230,7 @@ AS
             ON s.session_id = r.session_id
         OUTER APPLY sys.dm_exec_sql_text (c.most_recent_sql_handle) est
         WHERE dtl.resource_type <> N'DATABASE'
-            AND dtl.resource_database_id > CASE WHEN @system_dbs_info = 1 THEN 0 ELSE 4    END  --только пользовательские БД? задаётся параметром
+            AND dtl.resource_database_id > CASE WHEN @system_dbs_info = 1 THEN 0 ELSE 4 END  --только пользовательские БД? задаётся параметром
             AND s.is_user_process >= CASE WHEN @system_spids_info = 1 THEN 0 ELSE 1 END         --и только пользовательские соединения? задаётся параметром
             AND dtl.request_session_id <> CASE WHEN @check_my_locks = 0 THEN @@SPID ELSE 0 END  --учитывать блокировки, наложенные сессией в которой запускается ХП? задаётся параметром
         OPTION (MAXDOP 1);
@@ -244,7 +250,7 @@ AS
     DECLARE @hobt_id AS bigint;
     DECLARE @is_object AS bit;
 
-    DECLARE @cmd AS nvarchar(max);
+    --DECLARE @cmd AS nvarchar(max);
 
 
     DECLARE dbhobt_cursor CURSOR FOR
@@ -258,7 +264,7 @@ AS
     WHILE @@FETCH_STATUS = 0
         BEGIN
 
-        SET @cmd = N'
+        SET @sql = N'
             UPDATE ##locks_snapshot
             SET [object_name] = OBJECT_NAME (
             CASE WHEN ' + CAST(@is_object AS nvarchar(1)) + N' = 1 THEN ' + CAST(@hobt_id AS nvarchar(50)) + N' ELSE
@@ -267,11 +273,11 @@ AS
             WHERE [object_name] IS NULL AND [db_name] = ''' + @current_db_name + N''' AND hobt_id = ' + CAST(@hobt_id AS nvarchar(50))
             + N' OPTION (MAXDOP 1)';
 
-        --PRINT @cmd;
+        --PRINT @sql;
 
         BEGIN TRY
             --Если, например, не хватает прав, свалится в исключение
-            EXEC sp_executesql @cmd;
+            EXEC sp_executesql @sql;
 
         END TRY
         BEGIN CATCH
@@ -306,12 +312,14 @@ AS
     --##locked_objects перезаполняется при каждом запуске, вне зависимости от @refill_data, 
     --поскольку при разных вызовах ХП могут использоваться разные параметры @db_name/@db_id/@SPID/@login, 
     --а ##locked_objects заполняется с учётом этих параметров    
+    SET @sql = N'    
     INSERT INTO ##locked_objects (
             db_name                        
             , resource_type                
             , locked_object_name        
             , [resource]                
-            , lock_mode                    
+            , lock_mode 
+            , lock_status
             , granted_SPID                
             , [login]                    
             , [host]                    
@@ -331,6 +339,7 @@ AS
         , grantee.object_name AS locked_object_name
         , grantee.resource_description AS [resource]
         , grantee.request_mode AS lock_mode
+        , grantee.request_status AS lock_status
         , grantee.session_id AS granted_SPID
         , grantee.login_name AS [login]
         , grantee.host_name AS [host]
@@ -345,15 +354,33 @@ AS
         , waiter.text AS waiting_query
         , waiter.open_transaction_count AS waiter_tran_cnt
     FROM ##locks_snapshot grantee
-    JOIN ##locks_snapshot waiter 
-        ON grantee.db_name = waiter.db_name AND grantee.object_name = waiter.object_name
+    JOIN ##locks_snapshot waiter '
+    + CASE WHEN @use_blocking_SPID = 0 
+        THEN
+        N'ON grantee.db_name = waiter.db_name AND grantee.hobt_id = waiter.hobt_id AND grantee.object_name = waiter.object_name
             AND grantee.resource_description = waiter.resource_description AND grantee.session_id <> waiter.session_id
-            AND grantee.request_status = N'GRANT' AND grantee.request_status <> waiter.request_status
-    WHERE 
-        (grantee.db_name = @db_name OR @db_name IS NULL) AND
-        (grantee.session_id = @SPID OR waiter.session_id = @SPID OR @SPID IS NULL) AND
-        (grantee.login_name = @login OR waiter.login_name = @login OR @login IS NULL)
-    OPTION (MAXDOP 1);
+            AND grantee.request_status = N''GRANT'' AND grantee.request_status <> waiter.request_status '
+        ELSE 
+        N' ON grantee.session_id = waiter.blocking_session_id 
+        AND grantee.db_name = waiter.db_name AND grantee.hobt_id = waiter.hobt_id AND grantee.object_name = waiter.object_name
+        AND grantee.resource_description = waiter.resource_description AND grantee.session_id <> waiter.session_id '
+    END + 
+    N'WHERE 1=1 AND '
+    + CASE WHEN @db_name IS NULL THEN N' 1=1 ' ELSE N' grantee.db_name = ' + @db_name END + N' AND '
+    + CASE 
+        WHEN @SPID IS NULL THEN N' 1=1 ' 
+        ELSE N' grantee.session_id = ' + CAST(@SPID as nvarchar(10)) 
+            + N' OR waiter.session_id =  ' + CAST(@SPID as nvarchar(10))
+    END + N' AND '
+    + CASE 
+        WHEN @login IS NULL THEN N' 1=1 '
+        ELSE N' grantee.login_name = ' + @login + N' OR waiter.login_name = ' + @login 
+    END + N' OPTION (MAXDOP 1);';
+    
+
+
+    --print @sql
+    exec (@sql);
 
 
     --вывод данных
@@ -367,18 +394,44 @@ AS
     --2) количеству текущих ожиданий на блокировках у сессии (чем больше блокировок не может наложить сессия, тем выше в списке)
     --3) имени объекта
     --4) "структуре" ожиданий: объект целиком - экстент - страница - всё остальное
-    SELECT *
-    FROM ##locked_objects
-    ORDER BY db_name
+    
+    --чтобы корректно учесть @use_blocking_SPID, используется dynamic sql
+    DECLARE @lo_cmd AS nvarchar(max);
+    SET @lo_cmd = N'
+    SELECT 
+        db_name                        
+        , resource_type                
+        , locked_object_name        
+        , [resource]                
+        , lock_mode  
+        , lock_status
+        , granted_SPID                
+        , [login]                    
+        , [host]                    
+        , locking_query                
+        , locking_session_status    
+        , tran_cnt                    
+        , waiting_lock_mode            
+        , waiting_SPID                
+        , waiting_login                
+        , waiting_host
+        , waiter_blocking_session
+        , waiting_query                
+        , waiter_tran_cnt  
+    FROM ##locked_objects '
+    + CASE WHEN @use_blocking_SPID <> 0 THEN N'WHERE waiter_blocking_session = granted_SPID ' ELSE N'' END +
+    N'ORDER BY db_name
         , COUNT(*) OVER(PARTITION BY waiting_SPID) DESC
         , locked_object_name
         , CASE 
-            WHEN resource_type = N'OBJECT' THEN 1 
-            WHEN resource_type = N'EXTENT' THEN 2
-            WHEN resource_type = N'PAGE' THEN 3
+            WHEN resource_type = N''OBJECT'' THEN 1 
+            WHEN resource_type = N''EXTENT'' THEN 2
+            WHEN resource_type = N''PAGE'' THEN 3
             ELSE 4 END
         , granted_SPID
-    OPTION (MAXDOP 1);
+    OPTION (MAXDOP 1)';
+
+    exec (@lo_cmd);
 
 
     --TODO: переделать, возможно, стоит убрать фильтр по БД, или каким-то образом выделять блокировки в выбранной БД
@@ -725,9 +778,10 @@ SET STATISTICS TIME, IO ON;
 
 EXEC sp_GetLockingInfo 
                         @clear_data = 0
-                        , @refill_data = 1
+                        , @refill_data = 0
                         , @mode = N'DETAILED'
-                        , @blocking_chains = 1;
+                        , @blocking_chains = 1
+                        , @use_blocking_SPID = 1;
 SET STATISTICS TIME, IO OFF;
 
 
