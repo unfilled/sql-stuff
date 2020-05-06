@@ -190,7 +190,7 @@ AS
                     , [text]                    
         )
         SELECT 
-            DB_NAME (dtl.resource_database_id) AS [db_name]
+            ISNULL(DB_NAME(dtl.resource_database_id), N'NULL') AS [db_name]
             , dtl.resource_type
             , dtl.resource_description
             , dtl.resource_associated_entity_id AS hobt_id
@@ -230,7 +230,7 @@ AS
             ON s.session_id = r.session_id
         OUTER APPLY sys.dm_exec_sql_text (c.most_recent_sql_handle) est
         WHERE dtl.resource_type <> N'DATABASE'
-            AND dtl.resource_database_id > CASE WHEN @system_dbs_info = 1 THEN 0 ELSE 4    END  --только пользовательские БД? задаётся параметром
+            AND dtl.resource_database_id > CASE WHEN @system_dbs_info = 1 THEN 0 ELSE 4 END  --только пользовательские БД? задаётся параметром
             AND s.is_user_process >= CASE WHEN @system_spids_info = 1 THEN 0 ELSE 1 END         --и только пользовательские соединения? задаётся параметром
             AND dtl.request_session_id <> CASE WHEN @check_my_locks = 0 THEN @@SPID ELSE 0 END  --учитывать блокировки, наложенные сессией в которой запускается ХП? задаётся параметром
         OPTION (MAXDOP 1);
@@ -361,7 +361,9 @@ AS
             AND grantee.resource_description = waiter.resource_description AND grantee.session_id <> waiter.session_id
             AND grantee.request_status = N''GRANT'' AND grantee.request_status <> waiter.request_status '
         ELSE 
-        N' ON grantee.session_id = waiter.blocking_session_id '
+        N' ON grantee.session_id = waiter.blocking_session_id 
+        AND grantee.db_name = waiter.db_name AND grantee.hobt_id = waiter.hobt_id AND grantee.object_name = waiter.object_name
+        AND grantee.resource_description = waiter.resource_description AND grantee.session_id <> waiter.session_id '
     END + 
     N'WHERE 1=1 AND '
     + CASE WHEN @db_name IS NULL THEN N' 1=1 ' ELSE N' grantee.db_name = ' + @db_name END + N' AND '
