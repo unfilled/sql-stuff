@@ -6,10 +6,12 @@ IF OBJECT_ID ('dbo.sp_ruokay') IS NuLL
 GO
 
 ALTER PROCEDURE dbo.sp_ruokay (
-    @for varchar(10) = '00:01:00'
+    @for varchar(10) = '00:01:00',
+    @wait_order varchar(50) = 'wait_time' -- wait_count / avg_wait / wait_time
 )
 AS
 BEGIN
+    SET NOCOUNT ON;
 --- save current wait stats into temp table #w
 --thanks to Paul Randal and his excellent SQLSkills.com
 --sqlskills.com https://www.sqlskills.com/blogs/paul/wait-statistics-or-please-tell-me-where-it-hurts/
@@ -261,6 +263,7 @@ BEGIN
 
     -- get diffs from wait stats temp table
 
+    ;WITH last_waits AS(
     SELECT 
         COALESCE(wa.wait_type, wb.wait_type) AS wait_type,
         ABS(COALESCE(wa.wait_time_ms, 0) - COALESCE(wb.wait_time_ms, 0)) AS wait_time_ms,
@@ -269,10 +272,24 @@ BEGIN
     FROM #w wb
     FULL JOIN #w wa ON wb.wait_type = wa.wait_type AND wb.num < wa.num
     WHERE COALESCE(wb.num, 1) = 1 AND COALESCE(wa.num, 10) = 10
-    AND ABS(COALESCE(wa.waitCount, 0) - COALESCE(wb.waitCount, 0)) > 0;
+    AND ABS(COALESCE(wa.waitCount, 0) - COALESCE(wb.waitCount, 0)) > 0
+    )
+    SELECT 
+        wait_type,
+        wait_count,
+        CAST(wait_time_ms / 1.0 / NULLIF(wait_count, 0) AS decimal(10,2)) AS avg_wait_time_ms,
+        CAST(wait_time_ms / 1000.0 AS decimal(10,4)) AS wait_time_S,
+        CAST((wait_time_ms - signal_wait_time_ms) / 1000.0 AS decimal(10,4)) AS resource_wait_time_S,
+        CAST(signal_wait_time_ms / 1000.0 AS decimal(10,4)) AS signal_wait_time_S
+    FROM last_waits
+    ORDER BY 
+        CASE @wait_order 
+            WHEN 'avg_wait' THEN wait_time_ms / 1.0 / NULLIF(wait_count, 0)
+            WHEN 'wait_time' THEN wait_time_ms
+            ELSE wait_count 
+        END DESC;
 
     -- get diffs from virtual file stats table
-
     
     SELECT 
         t1.name, 
@@ -320,4 +337,7 @@ BEGIN
 END
 
 
-exec dbo.sp_ruokay
+exec dbo.sp_ruokay @for = '00:00:10', @wait_order = 'wait_time'
+        -- avg_wait
+        -- wait_time
+        -- wait_count
