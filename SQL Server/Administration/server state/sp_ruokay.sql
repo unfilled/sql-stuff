@@ -1,5 +1,5 @@
-﻿--USE Maintenance 
---GO
+﻿USE Maintenance 
+GO
 
 IF OBJECT_ID ('dbo.sp_ruokay') IS NuLL
     EXEC ('CREATE PROCEDURE sp_ruokay AS BEGIN SELECT 0 c END;')
@@ -272,7 +272,7 @@ BEGIN
     FROM #w wb
     FULL JOIN #w wa ON wb.wait_type = wa.wait_type AND wb.num < wa.num
     WHERE COALESCE(wb.num, 1) = 1 AND COALESCE(wa.num, 10) = 10
-    AND ABS(COALESCE(wa.waitCount, 0) - COALESCE(wb.waitCount, 0)) > 0
+        AND ABS(COALESCE(wa.waitCount, 0) - COALESCE(wb.waitCount, 0)) > 0
     )
     SELECT 
         wait_type,
@@ -288,6 +288,37 @@ BEGIN
             WHEN 'wait_time' THEN wait_time_ms
             ELSE wait_count 
         END DESC;
+
+
+    -- get summary from virtual file stats table
+
+    SELECT
+        SUM(CASE WHEN row_num = 1 THEN -1 ELSE 1 END * num_of_reads) AS reads_overall, 
+        SUM(CASE WHEN row_num = 1 THEN -1 ELSE 1 END * num_of_writes) AS writes_overall,
+        SUM(CASE WHEN row_num = 1 THEN -1 ELSE 1 END * (num_of_reads + num_of_writes)) AS IO_overall, 
+        CAST(
+            SUM(CASE WHEN row_num = 1 THEN -1 ELSE 1 END * num_of_writes) / 1.0 / 
+                NULLIF(SUM(CASE WHEN row_num = 1 THEN -1 ELSE 1 END * num_of_reads), 0) * 100 
+            AS decimal(10, 2)       
+        )AS write_prct,
+        CAST(SUM(CASE WHEN row_num = 1 THEN -1 ELSE 1 END * num_of_bytes_read) / 1024.0 / 1024 AS decimal(10,2)) AS read_MB, 
+        CAST(SUM(CASE WHEN row_num = 1 THEN -1 ELSE 1 END * num_of_bytes_written) / 1024.0 / 1024 AS decimal(10,2)) AS written_MB, 
+        CAST(
+            SUM(CASE WHEN row_num = 1 THEN -1 ELSE 1 END * io_stall_read_ms) / 1.0 /
+                NULLIF (SUM(CASE WHEN row_num = 1 THEN -1 ELSE 1 END * num_of_reads), 0)
+            AS decimal(10,2)
+        ) AS avg_read_latency_ms,
+        CAST(
+            SUM(CASE WHEN row_num = 1 THEN -1 ELSE 1 END * io_stall_write_ms) / 1.0 /
+                NULLIF (SUM(CASE WHEN row_num = 1 THEN -1 ELSE 1 END * num_of_writes), 0)
+            AS decimal(10,2)
+        ) AS avg_write_latency_ms,
+        CAST(
+            SUM(CASE WHEN row_num = 1 THEN -1 ELSE 1 END * io_stall) / 1.0 /
+                NULLIF(SUM(CASE WHEN row_num = 1 THEN -1 ELSE 1 END * (num_of_reads + ISNULL(num_of_writes, 0))), 0)                
+            AS decimal(10,2)
+        ) AS avg_latency_ms            
+    FROM #t
 
     -- get diffs from virtual file stats table
     
@@ -321,8 +352,8 @@ BEGIN
             as decimal(10,3)
         ) as write_latency_ms,
 	    CAST(
-            (t1.num_of_reads - t2.num_of_reads + t1.num_of_writes - t2.num_of_writes) / 1.0 
-                / NULLIF(t1.io_stall - t2.io_stall, 0) 
+            (t1.io_stall - t2.io_stall)/ 1.0 /
+                NULLIF(t1.num_of_reads - t2.num_of_reads + t1.num_of_writes - t2.num_of_writes, 0) 
             as decimal(10,3)
         ) as avg_latency_ms
     FROM #t t1
