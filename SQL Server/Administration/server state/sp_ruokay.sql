@@ -338,6 +338,6 @@ END
 
 
 exec dbo.sp_ruokay @for = '00:00:10', @wait_order = 'wait_time'
-        -- avg_wait
-        -- wait_time
-        -- wait_count
+                                                    -- wait_time
+                                                    -- avg_wait
+                                                    -- wait_count
