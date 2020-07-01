@@ -11,26 +11,27 @@ ALTER PROCEDURE sp_object_sizes
     @indexes    bit             = 0
 AS 
 BEGIN
+--db's with spaces in names will cause error
 
 DECLARE @dbs AS TABLE (name sysname);
 DECLARE @sql AS nvarchar(max) = N'';
 DECLARE @template AS nvarchar(max) = N'
 SELECT
-    ''[db]'' COLLATE Cyrillic_General_CI_AS AS database_name,
+    ''{db}'' COLLATE Cyrillic_General_CI_AS AS database_name,
     s.Name + N''.'' + t.NAME COLLATE Cyrillic_General_CI_AS AS table_name,
     i.Name COLLATE Cyrillic_General_CI_AS AS index_name,
     p.rows,
     CAST(SUM(a.total_pages) * 8.0 / NULLIF(p.rows, 0) AS NUMERIC(36, 2)) AS avg_KB_per_row,
     CAST(ROUND(((SUM(a.total_pages) * 8) / 1024.00), 2) AS NUMERIC(36, 2)) AS total_MB,
     CAST(ROUND(((SUM(a.used_pages) * 8) / 1024.00), 2) AS NUMERIC(36, 2)) AS used_MB
-FROM [db].sys.tables t
-INNER JOIN [db].sys.indexes i 
+FROM [{db}].sys.tables t
+INNER JOIN [{db}].sys.indexes i 
     ON t.OBJECT_ID = i.object_id
-INNER JOIN [db].sys.partitions p 
+INNER JOIN [{db}].sys.partitions p 
     ON i.object_id = p.OBJECT_ID AND i.index_id = p.index_id
-INNER JOIN [db].sys.allocation_units a 
+INNER JOIN [{db}].sys.allocation_units a 
     ON p.partition_id = a.container_id
-LEFT JOIN [db].sys.schemas s 
+LEFT JOIN [{db}].sys.schemas s 
     ON t.schema_id = s.schema_id
 WHERE
     t.is_ms_shipped = 0
@@ -75,7 +76,7 @@ BEGIN
         UNION ALL
         ';
 
-    SET @sql += REPLACE(@template, N'[db]', @name);
+    SET @sql += REPLACE(@template, N'{db}', @name);
 
     FETCH NEXT FROM cur INTO @name;
 END
