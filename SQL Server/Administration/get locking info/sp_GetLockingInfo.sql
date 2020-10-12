@@ -171,7 +171,7 @@ AS
 
     --если @refill_data = 0, работа продолжается с существующим срезом, иначе - нужен новый snapshot блокировок
     IF @refill_data = 1 
-        INSERT INTO ##locks_snapshot (
+        INSERT INTO ##locks_snapshot WITH (TABLOCKX) (
                     [db_name]                    
                     , resource_type                
                     , resource_description        
@@ -240,7 +240,7 @@ AS
     --поскольку его содержимое зависит от БД, в контексте которой выполняется запрос
     -------------------------------------------------------------------------------------------------------
     --список объектов во всех БД, для которых не удалось определить имя объекта
-    INSERT INTO ##orphaned_objects (db_name, hobt_id, is_object)
+    INSERT INTO ##orphaned_objects WITH (TABLOCKX) (db_name, hobt_id, is_object)
     SELECT DISTINCT db_name, hobt_id, CASE WHEN resource_type = N'OBJECT' THEN 1 ELSE 0 END AS is_object    
     FROM ##locks_snapshot
     WHERE object_name IS NULL
@@ -313,7 +313,7 @@ AS
     --поскольку при разных вызовах ХП могут использоваться разные параметры @db_name/@db_id/@SPID/@login, 
     --а ##locked_objects заполняется с учётом этих параметров    
     SET @sql = N'    
-    INSERT INTO ##locked_objects (
+    INSERT INTO ##locked_objects WITH (TABLOCKX) (
             db_name                        
             , resource_type                
             , locked_object_name        
@@ -357,7 +357,7 @@ AS
     JOIN ##locks_snapshot waiter '
     + CASE WHEN @use_blocking_SPID = 0 
         THEN
-        N'ON grantee.db_name = waiter.db_name AND grantee.hobt_id = waiter.hobt_id AND grantee.object_name = waiter.object_name
+        N' ON grantee.db_name = waiter.db_name AND grantee.hobt_id = waiter.hobt_id AND grantee.object_name = waiter.object_name
             AND grantee.resource_description = waiter.resource_description AND grantee.session_id <> waiter.session_id
             AND grantee.request_status = N''GRANT'' AND grantee.request_status <> waiter.request_status '
         ELSE 
@@ -365,17 +365,21 @@ AS
         AND grantee.db_name = waiter.db_name AND grantee.hobt_id = waiter.hobt_id AND grantee.object_name = waiter.object_name
         AND grantee.resource_description = waiter.resource_description AND grantee.session_id <> waiter.session_id '
     END + 
-    N'WHERE 1=1 AND '
+    N' 
+        WHERE 1=1 AND '
     + CASE WHEN @db_name IS NULL THEN N' 1=1 ' ELSE N' grantee.db_name = ' + @db_name END + N' AND '
     + CASE 
-        WHEN @SPID IS NULL THEN N' 1=1 ' 
-        ELSE N' grantee.session_id = ' + CAST(@SPID as nvarchar(10)) 
-            + N' OR waiter.session_id =  ' + CAST(@SPID as nvarchar(10))
-    END + N' AND '
+        WHEN @SPID IS NULL THEN N' (1=1 ' 
+        ELSE N'
+            (grantee.session_id = ' + CAST(@SPID as nvarchar(10)) 
+            + N'
+            OR waiter.session_id =  ' + CAST(@SPID as nvarchar(10))
+    END + N') AND '
     + CASE 
-        WHEN @login IS NULL THEN N' 1=1 '
-        ELSE N' grantee.login_name = ' + @login + N' OR waiter.login_name = ' + @login 
-    END + N' OPTION (MAXDOP 1);';
+        WHEN @login IS NULL THEN N'( 1=1 '
+        ELSE N' (grantee.login_name = ' + @login + N' OR waiter.login_name = ' + @login 
+    END + N')
+        OPTION (MAXDOP 1);';
     
 
 
